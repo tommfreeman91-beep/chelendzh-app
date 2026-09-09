@@ -3,6 +3,10 @@
 
   var STORAGE_KEY = 'cw_data_v1';
   var FUNNEL_API = '/api/funnel-proxy';
+  // Автоматическая часть воронки требует серверную функцию (см. api/funnel-proxy.js),
+  // которая пока не задеплоена (сайт временно на GitHub Pages, без серверной части).
+  // Включи это, когда приложение переедет на Vercel — см. README.
+  var FUNNEL_AUTO_ENABLED = false;
 
   // ---------- date helpers ----------
   function pad2(n) { return n < 10 ? '0' + n : '' + n; }
@@ -207,7 +211,7 @@
     if (view === 'today') renderToday();
     if (view === 'week') renderWeek();
     if (view === 'month') renderMonth();
-    if (view === 'funnel') { renderFunnelScreen(); fetchFunnel(); }
+    if (view === 'funnel') { renderFunnelScreen(); if (FUNNEL_AUTO_ENABLED) fetchFunnel(); }
     if (view === 'crm-list') renderCrmList();
     if (view === 'crm-detail') renderCrmDetail();
     if (view === 'stream-list') renderStreamList();
@@ -257,11 +261,10 @@
     $('dash-progress-note').textContent = note;
 
     var day = data.days[todayStr()];
-    var f = (data.funnelCache.data && data.funnelCache.data.funnel) || {};
     var mini = $('dash-today-mini');
     mini.innerHTML = '';
     var items = [
-      ['Заявок всего (бот)', f.applied !== undefined ? f.applied : '—'],
+      ['Комментариев сегодня', day ? day.commentsTotal : 0],
       ['Разборы сегодня', day ? day.calls : 0],
       ['Тест сегодня', day ? day.testSales : 0],
       ['Флагман сегодня', day ? day.flagshipSales : 0]
@@ -656,9 +659,17 @@
   ];
 
   function renderFunnelAutoStats() {
+    var grid = $('funnel-auto-stats');
+    var refreshBtn = $('funnel-refresh');
+    if (!FUNNEL_AUTO_ENABLED) {
+      grid.innerHTML = '<div class="diary-empty">Подключим позже — ждём доступ к Vercel</div>';
+      $('funnel-updated').textContent = 'Автоматическая часть пока не подключена';
+      refreshBtn.hidden = true;
+      return;
+    }
+    refreshBtn.hidden = false;
     var cache = data.funnelCache;
     var f = cache.data && cache.data.funnel ? cache.data.funnel : null;
-    var grid = $('funnel-auto-stats');
     grid.innerHTML = '';
     if (!f) {
       grid.innerHTML = '<div class="diary-empty">Данных пока нет</div>';
@@ -682,8 +693,12 @@
   }
 
   function renderFunnelPartners() {
-    var cache = data.funnelCache;
     var wrap = $('funnel-partners');
+    if (!FUNNEL_AUTO_ENABLED) {
+      wrap.innerHTML = '<div class="diary-empty">Появится вместе с автоматической частью воронки</div>';
+      return;
+    }
+    var cache = data.funnelCache;
     var partners = (cache.data && cache.data.partners) || [];
     if (!partners.length) {
       wrap.innerHTML = '<div class="diary-empty">Нет данных по партнёрам</div>';
@@ -705,26 +720,30 @@
   }
 
   function renderFunnelChain() {
-    var cache = data.funnelCache;
-    var f = (cache.data && cache.data.funnel) || {};
-    var applied = f.applied || 0;
-
     var calls = 0, testSales = 0, flagshipSales = 0;
     Object.keys(data.days).forEach(function (k) {
       calls += data.days[k].calls || 0;
       testSales += data.days[k].testSales || 0;
       flagshipSales += data.days[k].flagshipSales || 0;
     });
-
-    var appliedToCall = applied > 0 ? calls / applied : null;
     var callToTest = calls > 0 ? testSales / calls : null;
     var callToFlagship = calls > 0 ? flagshipSales / calls : null;
 
-    var stepsHtml = FUNNEL_STEPS.map(function (pair) {
-      return '<div class="funnel-step"><span>' + pair[1] + '</span><b>' + (f[pair[0]] !== undefined ? f[pair[0]] : '—') + '</b></div>';
-    }).join('');
+    var stepsHtml = '';
+    if (FUNNEL_AUTO_ENABLED) {
+      var cache = data.funnelCache;
+      var f = (cache.data && cache.data.funnel) || {};
+      var applied = f.applied || 0;
+      var appliedToCall = applied > 0 ? calls / applied : null;
+      stepsHtml += FUNNEL_STEPS.map(function (pair) {
+        return '<div class="funnel-step"><span>' + pair[1] + '</span><b>' + (f[pair[0]] !== undefined ? f[pair[0]] : '—') + '</b></div>';
+      }).join('');
+      stepsHtml += '<div class="funnel-step"><span>→ Разборы (всего)</span><b>' + calls + ' (' + pct(appliedToCall) + ')</b></div>';
+    } else {
+      stepsHtml += '<div class="funnel-step"><span>Бот → Заявка</span><b>подключим позже</b></div>';
+      stepsHtml += '<div class="funnel-step"><span>→ Разборы (всего)</span><b>' + calls + '</b></div>';
+    }
     stepsHtml +=
-      '<div class="funnel-step"><span>→ Разборы (всего)</span><b>' + calls + ' (' + pct(appliedToCall) + ')</b></div>' +
       '<div class="funnel-step"><span>→ Тест-драйв (всего)</span><b>' + testSales + ' (' + pct(callToTest) + ')</b></div>' +
       '<div class="funnel-step"><span>→ Флагман (всего)</span><b>' + flagshipSales + ' (' + pct(callToFlagship) + ')</b></div>';
     $('funnel-chain').innerHTML = stepsHtml;
@@ -1118,7 +1137,7 @@
 
   // ================= INIT =================
   navigate('dashboard');
-  fetchFunnel();
+  if (FUNNEL_AUTO_ENABLED) fetchFunnel();
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', function () {

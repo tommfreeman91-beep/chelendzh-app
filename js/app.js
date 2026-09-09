@@ -2,6 +2,7 @@
   'use strict';
 
   var STORAGE_KEY = 'cw_data_v1';
+  var FUNNEL_API = '/api/funnel-proxy';
 
   // ---------- date helpers ----------
   function pad2(n) { return n < 10 ? '0' + n : '' + n; }
@@ -36,6 +37,9 @@
     if (idx > 6) idx = 6;
     return idx;
   }
+  function dayNumberFor(dateStr) {
+    return Math.floor((parseDate(dateStr) - parseDate(data.settings.startDate)) / 86400000) + 1;
+  }
 
   // ---------- data store ----------
   function defaultData() {
@@ -46,12 +50,16 @@
         testPrice: 50000,
         maxClientsMin: 3,
         maxClientsMax: 5,
-        startDate: todayStr()
+        startDate: todayStr(),
+        contentPillars: ['Возражения и анти-шум', 'Кейсы клиентов', 'Психология денег', 'Закулисье менторства', 'Личный бренд Tomm Freeman'],
+        competitorChannels: []
       },
       days: {},
       weeks: {},
       months: {},
-      streams: []
+      streams: [],
+      contacts: [],
+      funnelCache: { data: null, lastSuccess: null, lastError: false, history: [] }
     };
   }
 
@@ -68,6 +76,8 @@
       d.weeks = parsed.weeks || {};
       d.months = parsed.months || {};
       d.streams = parsed.streams || [];
+      d.contacts = parsed.contacts || [];
+      d.funnelCache = Object.assign(d.funnelCache, parsed.funnelCache || {});
       return d;
     } catch (e) {
       console.error('Не удалось прочитать данные', e);
@@ -85,16 +95,22 @@
   }
 
   function getDay(dateStr) {
-    if (!data.days[dateStr]) {
-      data.days[dateStr] = {
-        reels: false, stories: false, tgPost: false, threads: 0,
-        commentChannels: 0, commentsTotal: 0,
-        baseContacts: 0,
-        leads: 0, calls: 0, testSales: 0, flagshipSales: 0,
-        diary: ''
-      };
-    }
-    return data.days[dateStr];
+    if (!data.days[dateStr]) data.days[dateStr] = {};
+    var d = data.days[dateStr];
+    if (d.reels === undefined) d.reels = false;
+    if (d.stories === undefined) d.stories = false;
+    if (d.tgPost === undefined) d.tgPost = false;
+    if (d.threads === undefined) d.threads = 0;
+    if (d.contentPillar === undefined) d.contentPillar = '';
+    if (d.commentedChannels === undefined) d.commentedChannels = [];
+    if (d.commentsTotal === undefined) d.commentsTotal = 0;
+    if (d.baseContacts === undefined) d.baseContacts = 0;
+    if (d.calls === undefined) d.calls = 0;
+    if (d.testSales === undefined) d.testSales = 0;
+    if (d.flagshipSales === undefined) d.flagshipSales = 0;
+    if (d.stageNote === undefined) d.stageNote = '';
+    if (d.diary === undefined) d.diary = '';
+    return d;
   }
 
   function getWeek(mondayStr) {
@@ -109,10 +125,10 @@
   }
 
   function getMonth(key) {
-    if (!data.months[key]) {
-      data.months[key] = { ads: [], summary: '' };
-    }
-    return data.months[key];
+    if (!data.months[key]) data.months[key] = {};
+    var m = data.months[key];
+    if (m.summary === undefined) m.summary = '';
+    return m;
   }
 
   // ---------- app state ----------
@@ -121,7 +137,8 @@
     todayDate: todayStr(),
     weekMonday: fmtDate(mondayOf(new Date())),
     monthDate: fmtDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)),
-    streamId: null
+    streamId: null,
+    contactId: null
   };
 
   // ---------- generic dom helpers ----------
@@ -141,6 +158,15 @@
     if (n === null || n === undefined || isNaN(n)) return '—';
     return Math.round(n * 100) + '%';
   }
+  function round1(n) { return Math.round(n * 10) / 10; }
+  function escapeHtml(s) {
+    var div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
+  }
+  function statItem(label, value) {
+    return '<div class="stat-item"><div class="stat-label">' + label + '</div><div class="stat-value">' + value + '</div></div>';
+  }
 
   function flashStatus(id, msg) {
     var el = $(id);
@@ -157,18 +183,22 @@
     if (VIEW_ALIASES[view]) view = VIEW_ALIASES[view];
     state.view = view;
     if (params && params.streamId !== undefined) state.streamId = params.streamId;
+    if (params && params.contactId !== undefined) state.contactId = params.contactId;
 
     document.querySelectorAll('.view').forEach(function (el) {
       el.classList.toggle('active', el.dataset.view === view);
     });
     document.querySelectorAll('.tab').forEach(function (el) {
       var nav = el.dataset.nav;
-      var isActive = nav === view || (nav === 'stream-list' && view === 'stream-detail');
+      var isActive = nav === view ||
+        (nav === 'stream-list' && view === 'stream-detail') ||
+        (nav === 'crm-list' && view === 'crm-detail');
       el.classList.toggle('active', isActive);
     });
 
     var titles = {
       dashboard: 'Челлендж', today: 'Сегодня', week: 'Неделя', month: 'Месяц',
+      funnel: 'Воронка', 'crm-list': 'CRM', 'crm-detail': 'Контакт',
       'stream-list': 'Эфиры', 'stream-detail': 'Эфир', settings: 'Настройки'
     };
     $('topbar-title').textContent = titles[view] || 'Челлендж';
@@ -177,6 +207,9 @@
     if (view === 'today') renderToday();
     if (view === 'week') renderWeek();
     if (view === 'month') renderMonth();
+    if (view === 'funnel') { renderFunnelScreen(); fetchFunnel(); }
+    if (view === 'crm-list') renderCrmList();
+    if (view === 'crm-detail') renderCrmDetail();
     if (view === 'stream-list') renderStreamList();
     if (view === 'stream-detail') renderStreamDetail();
     if (view === 'settings') renderSettings();
@@ -224,13 +257,14 @@
     $('dash-progress-note').textContent = note;
 
     var day = data.days[todayStr()];
+    var f = (data.funnelCache.data && data.funnelCache.data.funnel) || {};
     var mini = $('dash-today-mini');
     mini.innerHTML = '';
     var items = [
-      ['Заявки', day ? day.leads : 0],
-      ['Разборы', day ? day.calls : 0],
-      ['Продажи теста', day ? day.testSales : 0],
-      ['Продажи флагмана', day ? day.flagshipSales : 0]
+      ['Заявок всего (бот)', f.applied !== undefined ? f.applied : '—'],
+      ['Разборы сегодня', day ? day.calls : 0],
+      ['Тест сегодня', day ? day.testSales : 0],
+      ['Флагман сегодня', day ? day.flagshipSales : 0]
     ];
     items.forEach(function (it) {
       var div = document.createElement('div');
@@ -240,8 +274,6 @@
     });
   }
 
-  function round1(n) { return Math.round(n * 10) / 10; }
-
   function totalFlagshipSalesSince(startStr) {
     var sum = 0;
     Object.keys(data.days).forEach(function (k) {
@@ -250,7 +282,113 @@
     return sum;
   }
 
+  // ================= ЭТАП 1: разовые задания по дням =================
+  var STAGE1_TASKS = {
+    1: {
+      text: 'День 1: зафиксируй факт на старте — заявки, разборы и продажи за последний обычный месяц. И сделай первую запись в дневник — письмо себе через 6 месяцев: что мешало держать этот доход раньше?',
+      field: true, fieldLabel: 'Факт на старте (заявки/разборы/продажи за последний обычный месяц)'
+    },
+    2: {
+      text: 'День 2: сегодня — расчистка информационного пространства. Просто сделай это, вносить здесь ничего не нужно.',
+      field: false
+    },
+    3: {
+      text: 'День 3: собери список каналов конкурентов (добавь их в Настройках) и отметь топ-5.',
+      field: true, fieldLabel: 'Топ-5 каналов конкурентов'
+    },
+    4: {
+      text: 'День 4: зафиксируй контент-опоры (в Настройках) и распиши темы на неделю.',
+      field: true, fieldLabel: 'Темы на неделю по контент-опорам'
+    },
+    5: {
+      text: 'День 5: составь список кандидатов в партнёры для будущего эфира.',
+      field: true, fieldLabel: 'Кандидаты в партнёры'
+    },
+    6: {
+      text: 'День 6: сверься в воркботе по рассрочкам/займам. Здесь вносить ничего не нужно.',
+      field: false
+    },
+    7: {
+      text: 'День 7: обычное еженедельное ревью — переходи на экран «Неделя».',
+      field: false, link: 'week', linkLabel: 'Перейти к неделе'
+    },
+    30: {
+      text: 'День 30: обычный месячный разбор — экран «Месяц». Этап 2 планируется по факту месяца 1, детали появятся позже.',
+      field: false, link: 'month', linkLabel: 'Перейти к месяцу'
+    }
+  };
+
+  function renderStageTask() {
+    var n = dayNumberFor(state.todayDate);
+    var task = STAGE1_TASKS[n];
+    var card = $('stage-task-card');
+    var field = $('stage-task-field');
+    var linkBtn = $('stage-task-link');
+    if (!task) {
+      card.hidden = true;
+      field.hidden = true;
+      field.value = '';
+      linkBtn.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    $('stage-task-text').textContent = task.text;
+    if (task.field) {
+      field.hidden = false;
+      field.placeholder = task.fieldLabel;
+      field.value = getDay(state.todayDate).stageNote || '';
+    } else {
+      field.hidden = true;
+      field.value = '';
+    }
+    if (task.link) {
+      linkBtn.hidden = false;
+      linkBtn.textContent = task.linkLabel;
+      linkBtn.onclick = function () { navigate(task.link); };
+    } else {
+      linkBtn.hidden = true;
+    }
+  }
+
   // ================= СЕГОДНЯ =================
+  function renderPillarSelect() {
+    var sel = $('f-pillar');
+    sel.innerHTML = '';
+    var optNone = document.createElement('option');
+    optNone.value = '';
+    optNone.textContent = '— не выбрано —';
+    sel.appendChild(optNone);
+    (data.settings.contentPillars || []).forEach(function (p) {
+      var opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      sel.appendChild(opt);
+    });
+  }
+
+  function renderCommentChannelsList() {
+    var wrap = $('f-comment-channels-list');
+    var channels = data.settings.competitorChannels || [];
+    var day = getDay(state.todayDate);
+    wrap.innerHTML = '';
+    if (!channels.length) {
+      wrap.innerHTML = '<div class="diary-empty">Добавь каналы в Настройках, чтобы отмечать их здесь</div>';
+      return;
+    }
+    channels.forEach(function (ch) {
+      var label = document.createElement('label');
+      label.className = 'row-check';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = day.commentedChannels.indexOf(ch) !== -1;
+      cb.dataset.channel = ch;
+      on(cb, 'change', saveTodayField);
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(' ' + ch));
+      wrap.appendChild(label);
+    });
+  }
+
   function renderToday() {
     $('today-date-input').value = state.todayDate;
     var day = getDay(state.todayDate);
@@ -258,15 +396,17 @@
     setCheck('f-stories', day.stories);
     setCheck('f-tg-post', day.tgPost);
     setNum('f-threads', day.threads);
-    setNum('f-comment-channels', day.commentChannels);
+    renderPillarSelect();
+    $('f-pillar').value = day.contentPillar || '';
+    renderCommentChannelsList();
     setNum('f-comments-total', day.commentsTotal);
     setNum('f-base-contacts', day.baseContacts);
-    setNum('f-leads', day.leads);
     setNum('f-calls', day.calls);
     setNum('f-test-sales', day.testSales);
     setNum('f-flagship-sales', day.flagshipSales);
     setText('f-diary', day.diary);
     renderDiaryHistory();
+    renderStageTask();
   }
 
   function saveTodayField() {
@@ -275,14 +415,20 @@
     day.stories = checkVal('f-stories');
     day.tgPost = checkVal('f-tg-post');
     day.threads = numVal('f-threads');
-    day.commentChannels = numVal('f-comment-channels');
+    day.contentPillar = $('f-pillar').value;
+    var checked = [];
+    document.querySelectorAll('#f-comment-channels-list [data-channel]').forEach(function (cb) {
+      if (cb.checked) checked.push(cb.dataset.channel);
+    });
+    day.commentedChannels = checked;
     day.commentsTotal = numVal('f-comments-total');
     day.baseContacts = numVal('f-base-contacts');
-    day.leads = numVal('f-leads');
     day.calls = numVal('f-calls');
     day.testSales = numVal('f-test-sales');
     day.flagshipSales = numVal('f-flagship-sales');
     day.diary = textVal('f-diary');
+    var stageField = $('stage-task-field');
+    if (!stageField.hidden) day.stageNote = stageField.value;
     saveData();
   }
 
@@ -320,14 +466,19 @@
     });
   }
 
-  ['f-reels', 'f-stories', 'f-tg-post', 'f-threads', 'f-comment-channels', 'f-comments-total',
-    'f-base-contacts', 'f-leads', 'f-calls', 'f-test-sales', 'f-flagship-sales'].forEach(function (id) {
+  ['f-reels', 'f-stories', 'f-tg-post', 'f-threads', 'f-pillar', 'f-comments-total',
+    'f-base-contacts', 'f-calls', 'f-test-sales', 'f-flagship-sales'].forEach(function (id) {
     on($(id), 'change', function () { saveTodayField(); });
   });
   var diaryTimer = null;
   on($('f-diary'), 'input', function () {
     clearTimeout(diaryTimer);
     diaryTimer = setTimeout(saveTodayField, 400);
+  });
+  var stageFieldTimer = null;
+  on($('stage-task-field'), 'input', function () {
+    clearTimeout(stageFieldTimer);
+    stageFieldTimer = setTimeout(saveTodayField, 400);
   });
   on($('today-save'), 'click', function () {
     saveTodayField();
@@ -353,6 +504,21 @@
   });
 
   // ================= НЕДЕЛЯ =================
+  function estimateWeeklyApplications(monday) {
+    var history = data.funnelCache.history || [];
+    if (!history.length) return null;
+    var weekStart = monday.getTime();
+    var weekEnd = addDays(monday, 7).getTime();
+    var before = null, atEnd = null;
+    history.forEach(function (h) {
+      if (h.ts <= weekStart && (!before || h.ts > before.ts)) before = h;
+      if (h.ts <= weekEnd && (!atEnd || h.ts > atEnd.ts)) atEnd = h;
+    });
+    if (!before || !atEnd || atEnd.ts <= before.ts) return null;
+    var delta = (atEnd.applied || 0) - (before.applied || 0);
+    return delta >= 0 ? delta : null;
+  }
+
   function renderWeek() {
     var monday = parseDate(state.weekMonday);
     var sunday = addDays(monday, 6);
@@ -370,24 +536,24 @@
   }
 
   function renderWeekFunnel(monday) {
-    var leads = 0, calls = 0, testSales = 0, flagshipSales = 0;
+    var calls = 0, testSales = 0, flagshipSales = 0;
     for (var i = 0; i < 7; i++) {
       var k = fmtDate(addDays(monday, i));
       var d = data.days[k];
       if (d) {
-        leads += d.leads || 0;
         calls += d.calls || 0;
         testSales += d.testSales || 0;
         flagshipSales += d.flagshipSales || 0;
       }
     }
-    var leadToCall = leads > 0 ? calls / leads : null;
+    var leadsEstimate = estimateWeeklyApplications(monday);
+    var leadToCall = (leadsEstimate !== null && leadsEstimate > 0) ? calls / leadsEstimate : null;
     var callToTest = calls > 0 ? testSales / calls : null;
     var callToFlagship = calls > 0 ? flagshipSales / calls : null;
 
     var wrap = $('week-funnel');
     wrap.innerHTML =
-      '<div class="funnel-step"><span>Заявки</span><b>' + leads + '</b></div>' +
+      '<div class="funnel-step"><span>Заявки (оценка по воронке)</span><b>' + (leadsEstimate === null ? 'нет данных' : leadsEstimate) + '</b></div>' +
       '<div class="funnel-step"><span>→ Разборы</span><b>' + calls + ' (' + pct(leadToCall) + ')</b></div>' +
       '<div class="funnel-step"><span>→ Продажи теста</span><b>' + testSales + ' (' + pct(callToTest) + ')</b></div>' +
       '<div class="funnel-step"><span>→ Продажи флагмана</span><b>' + flagshipSales + ' (' + pct(callToFlagship) + ')</b></div>';
@@ -435,72 +601,7 @@
     var m = getMonth(key);
     setText('month-summary', m.summary);
 
-    renderAdList(key);
-    renderMonthStats(key);
     renderMonthProgress();
-  }
-
-  function renderAdList(key) {
-    var m = getMonth(key);
-    var wrap = $('ad-list');
-    wrap.innerHTML = '';
-    if (!m.ads.length) {
-      wrap.innerHTML = '<div class="diary-empty">Расходов пока нет</div>';
-    } else {
-      m.ads.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).forEach(function (ad) {
-        var row = document.createElement('div');
-        row.className = 'ad-item';
-        row.innerHTML = '<span>' + fmtMoney(ad.amount) + (ad.label ? ' · ' + escapeHtml(ad.label) : '') +
-          '<span class="ad-item-meta"> · ' + fmtHuman(parseDate(ad.date)) + '</span></span>' +
-          '<button class="ad-item-del" data-id="' + ad.id + '">✕</button>';
-        wrap.appendChild(row);
-      });
-    }
-    var total = m.ads.reduce(function (s, a) { return s + (a.amount || 0); }, 0);
-    $('ad-total').textContent = 'Сумма за месяц: ' + fmtMoney(total);
-
-    wrap.querySelectorAll('.ad-item-del').forEach(function (btn) {
-      on(btn, 'click', function () {
-        var id = btn.dataset.id;
-        m.ads = m.ads.filter(function (a) { return a.id !== id; });
-        saveData();
-        renderAdList(key);
-        renderMonthStats(key);
-      });
-    });
-  }
-
-  function escapeHtml(s) {
-    var div = document.createElement('div');
-    div.textContent = s;
-    return div.innerHTML;
-  }
-
-  function renderMonthStats(key) {
-    var m = getMonth(key);
-    var totalAdSpend = m.ads.reduce(function (s, a) { return s + (a.amount || 0); }, 0);
-
-    var leads = 0, testSales = 0;
-    Object.keys(data.days).forEach(function (k) {
-      if (k.indexOf(key) === 0) {
-        leads += data.days[k].leads || 0;
-        testSales += data.days[k].testSales || 0;
-      }
-    });
-
-    var costPerLead = (totalAdSpend > 0 && leads > 0) ? totalAdSpend / leads : null;
-    var costPerTest = (totalAdSpend > 0 && testSales > 0) ? totalAdSpend / testSales : null;
-
-    var grid = $('month-stats');
-    grid.innerHTML =
-      statItem('Расход на трафик', fmtMoney(totalAdSpend)) +
-      statItem('Заявок за месяц', leads) +
-      statItem('Цена заявки', costPerLead === null ? '—' : fmtMoney(costPerLead)) +
-      statItem('Цена продажи теста', costPerTest === null ? '—' : fmtMoney(costPerTest));
-  }
-
-  function statItem(label, value) {
-    return '<div class="stat-item"><div class="stat-label">' + label + '</div><div class="stat-value">' + value + '</div></div>';
   }
 
   function renderMonthProgress() {
@@ -543,20 +644,237 @@
     state.monthDate = fmtDate(addMonths(parseDate(state.monthDate), 1));
     renderMonth();
   });
-  on($('ad-add'), 'click', function () {
-    var amount = parseFloat($('ad-amount').value);
-    var dateStr = $('ad-date').value;
-    var label = $('ad-label').value.trim();
-    if (!amount || amount <= 0) { alert('Укажи сумму расхода'); return; }
-    if (!dateStr) { dateStr = todayStr(); }
-    var key = monthKey(parseDate(state.monthDate));
-    var m = getMonth(key);
-    m.ads.push({ id: 'ad_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), amount: amount, date: dateStr, label: label });
+
+  // ================= ВОРОНКА =================
+  var FUNNEL_STEPS = [
+    ['opened', 'Открыл бота'],
+    ['about', 'Обо мне'],
+    ['lesson', 'Видеоурок'],
+    ['quiz', 'Квиз'],
+    ['form', 'Форма заявки'],
+    ['applied', 'Заявка отправлена']
+  ];
+
+  function renderFunnelAutoStats() {
+    var cache = data.funnelCache;
+    var f = cache.data && cache.data.funnel ? cache.data.funnel : null;
+    var grid = $('funnel-auto-stats');
+    grid.innerHTML = '';
+    if (!f) {
+      grid.innerHTML = '<div class="diary-empty">Данных пока нет</div>';
+    } else {
+      FUNNEL_STEPS.forEach(function (pair) {
+        grid.insertAdjacentHTML('beforeend', statItem(pair[1], f[pair[0]] !== undefined ? f[pair[0]] : '—'));
+      });
+      var convPct = (cache.data.conversionPercent !== undefined && cache.data.conversionPercent !== null)
+        ? (round1(cache.data.conversionPercent) + '%') : '—';
+      grid.insertAdjacentHTML('beforeend', statItem('Конверсия в заявку', convPct));
+    }
+    var note;
+    if (cache.lastSuccess) {
+      var d = new Date(cache.lastSuccess);
+      note = 'Обновлено: ' + fmtHuman(d) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+      if (cache.lastError) note += ' · последнее обновление не удалось, показаны данные из кеша';
+    } else {
+      note = cache.lastError ? 'Не удалось загрузить данные воронки' : 'Ещё не обновлялось';
+    }
+    $('funnel-updated').textContent = note;
+  }
+
+  function renderFunnelPartners() {
+    var cache = data.funnelCache;
+    var wrap = $('funnel-partners');
+    var partners = (cache.data && cache.data.partners) || [];
+    if (!partners.length) {
+      wrap.innerHTML = '<div class="diary-empty">Нет данных по партнёрам</div>';
+      return;
+    }
+    wrap.innerHTML = '';
+    partners.forEach(function (p) {
+      var row = document.createElement('div');
+      row.className = 'partners-row';
+      var nameSpan = document.createElement('span');
+      nameSpan.textContent = p.name || '—';
+      var metaSpan = document.createElement('span');
+      metaSpan.className = 'partners-meta';
+      metaSpan.textContent = (p.clicks || 0) + ' переходов · ' + (p.applications || 0) + ' заявок';
+      row.appendChild(nameSpan);
+      row.appendChild(metaSpan);
+      wrap.appendChild(row);
+    });
+  }
+
+  function renderFunnelChain() {
+    var cache = data.funnelCache;
+    var f = (cache.data && cache.data.funnel) || {};
+    var applied = f.applied || 0;
+
+    var calls = 0, testSales = 0, flagshipSales = 0;
+    Object.keys(data.days).forEach(function (k) {
+      calls += data.days[k].calls || 0;
+      testSales += data.days[k].testSales || 0;
+      flagshipSales += data.days[k].flagshipSales || 0;
+    });
+
+    var appliedToCall = applied > 0 ? calls / applied : null;
+    var callToTest = calls > 0 ? testSales / calls : null;
+    var callToFlagship = calls > 0 ? flagshipSales / calls : null;
+
+    var stepsHtml = FUNNEL_STEPS.map(function (pair) {
+      return '<div class="funnel-step"><span>' + pair[1] + '</span><b>' + (f[pair[0]] !== undefined ? f[pair[0]] : '—') + '</b></div>';
+    }).join('');
+    stepsHtml +=
+      '<div class="funnel-step"><span>→ Разборы (всего)</span><b>' + calls + ' (' + pct(appliedToCall) + ')</b></div>' +
+      '<div class="funnel-step"><span>→ Тест-драйв (всего)</span><b>' + testSales + ' (' + pct(callToTest) + ')</b></div>' +
+      '<div class="funnel-step"><span>→ Флагман (всего)</span><b>' + flagshipSales + ' (' + pct(callToFlagship) + ')</b></div>';
+    $('funnel-chain').innerHTML = stepsHtml;
+  }
+
+  function renderFunnelScreen() {
+    renderFunnelAutoStats();
+    renderFunnelPartners();
+    renderFunnelChain();
+  }
+
+  function fetchFunnel() {
+    return fetch(FUNNEL_API).then(function (res) {
+      if (!res.ok) throw new Error('bad status ' + res.status);
+      return res.json();
+    }).then(function (json) {
+      data.funnelCache.data = json;
+      data.funnelCache.lastSuccess = Date.now();
+      data.funnelCache.lastError = false;
+      var f = json.funnel || {};
+      var history = data.funnelCache.history || [];
+      history.push({ ts: Date.now(), opened: f.opened || 0, about: f.about || 0, lesson: f.lesson || 0, quiz: f.quiz || 0, form: f.form || 0, applied: f.applied || 0 });
+      if (history.length > 400) history = history.slice(history.length - 400);
+      data.funnelCache.history = history;
+      saveData();
+      if (state.view === 'funnel') renderFunnelScreen();
+      renderDashboard();
+    }).catch(function () {
+      data.funnelCache.lastError = true;
+      saveData();
+      if (state.view === 'funnel') renderFunnelAutoStats();
+    });
+  }
+
+  on($('funnel-refresh'), 'click', function () {
+    $('funnel-updated').textContent = 'Обновляю...';
+    fetchFunnel();
+  });
+
+  // ================= CRM =================
+  var CRM_STAGES = ['старый', 'новый', 'переписка', 'назначен созвон', 'созвон проведён', 'внёс оплату'];
+
+  function newContact() {
+    var c = {
+      id: 'contact_' + Date.now(),
+      name: '', source: '', stage: CRM_STAGES[1], note: '',
+      lastTouch: todayStr(), createdAt: Date.now()
+    };
+    data.contacts.push(c);
     saveData();
-    $('ad-amount').value = '';
-    $('ad-label').value = '';
-    renderAdList(key);
-    renderMonthStats(key);
+    return c;
+  }
+
+  function currentContact() {
+    return data.contacts.find(function (c) { return c.id === state.contactId; });
+  }
+
+  function renderCrmList() {
+    var wrap = $('crm-list');
+    var list = data.contacts.slice().sort(function (a, b) { return b.createdAt - a.createdAt; });
+    if (!list.length) {
+      wrap.innerHTML = '<div class="stream-empty">Контактов пока нет. Нажми «Новый контакт».</div>';
+      return;
+    }
+    wrap.innerHTML = '';
+    list.forEach(function (c) {
+      var card = document.createElement('div');
+      card.className = 'stream-card';
+      var title = document.createElement('div');
+      title.className = 'stream-card-title';
+      title.textContent = c.name || 'Без имени';
+      var meta = document.createElement('div');
+      meta.className = 'stream-card-meta';
+      meta.textContent = (c.source ? c.source + ' · ' : '') + 'касание: ' + (c.lastTouch ? fmtHuman(parseDate(c.lastTouch)) : '—');
+      var badge = document.createElement('div');
+      badge.className = 'stage-badge';
+      badge.textContent = c.stage;
+      card.appendChild(title);
+      card.appendChild(meta);
+      card.appendChild(badge);
+      card.addEventListener('click', function () { navigate('crm-detail', { contactId: c.id }); });
+      wrap.appendChild(card);
+    });
+  }
+
+  on($('crm-new'), 'click', function () {
+    var c = newContact();
+    navigate('crm-detail', { contactId: c.id });
+  });
+  on($('crm-back'), 'click', function () { navigate('crm-list'); });
+
+  function renderCrmStagePicker(selected) {
+    var wrap = $('crm-stage-picker');
+    wrap.innerHTML = '';
+    CRM_STAGES.forEach(function (stage) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'stage-chip' + (stage === selected ? ' active' : '');
+      chip.textContent = stage;
+      chip.addEventListener('click', function () {
+        var c = currentContact();
+        if (!c) return;
+        c.stage = stage;
+        saveData();
+        renderCrmStagePicker(stage);
+      });
+      wrap.appendChild(chip);
+    });
+  }
+
+  function renderCrmDetail() {
+    var c = currentContact();
+    if (!c) { navigate('crm-list'); return; }
+    setText('crm-name', c.name);
+    setText('crm-source', c.source);
+    $('crm-last-touch').value = c.lastTouch || '';
+    setText('crm-note', c.note);
+    renderCrmStagePicker(c.stage);
+  }
+
+  function saveCrmField() {
+    var c = currentContact();
+    if (!c) return;
+    c.name = textVal('crm-name');
+    c.source = textVal('crm-source');
+    c.lastTouch = $('crm-last-touch').value;
+    c.note = textVal('crm-note');
+    saveData();
+  }
+
+  on($('crm-name'), 'change', saveCrmField);
+  on($('crm-source'), 'change', saveCrmField);
+  on($('crm-last-touch'), 'change', saveCrmField);
+  var crmNoteTimer = null;
+  on($('crm-note'), 'input', function () {
+    clearTimeout(crmNoteTimer);
+    crmNoteTimer = setTimeout(saveCrmField, 400);
+  });
+  on($('crm-save'), 'click', function () {
+    saveCrmField();
+    flashStatus('crm-save-status', 'Сохранено ✓');
+    renderCrmList();
+  });
+  on($('crm-delete'), 'click', function () {
+    var c = currentContact();
+    if (!c) return;
+    if (!confirm('Удалить контакт «' + (c.name || 'без имени') + '»?')) return;
+    data.contacts = data.contacts.filter(function (x) { return x.id !== c.id; });
+    saveData();
+    navigate('crm-list');
   });
 
   // ================= ЭФИРЫ =================
@@ -673,6 +991,54 @@
   });
 
   // ================= НАСТРОЙКИ =================
+  function renderTagList(containerId, items, onRemove) {
+    var wrap = $(containerId);
+    wrap.innerHTML = '';
+    items.forEach(function (item, idx) {
+      var chip = document.createElement('div');
+      chip.className = 'tag-chip';
+      var span = document.createElement('span');
+      span.textContent = item;
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = '✕';
+      btn.addEventListener('click', function () { onRemove(idx); });
+      chip.appendChild(span);
+      chip.appendChild(btn);
+      wrap.appendChild(chip);
+    });
+  }
+
+  function renderSettingsLists() {
+    renderTagList('pillars-list', data.settings.contentPillars, function (idx) {
+      data.settings.contentPillars.splice(idx, 1);
+      saveData();
+      renderSettingsLists();
+    });
+    renderTagList('channels-list', data.settings.competitorChannels, function (idx) {
+      data.settings.competitorChannels.splice(idx, 1);
+      saveData();
+      renderSettingsLists();
+    });
+  }
+
+  on($('pillar-add'), 'click', function () {
+    var v = $('pillar-input').value.trim();
+    if (!v) return;
+    data.settings.contentPillars.push(v);
+    $('pillar-input').value = '';
+    saveData();
+    renderSettingsLists();
+  });
+  on($('channel-add'), 'click', function () {
+    var v = $('channel-input').value.trim();
+    if (!v) return;
+    data.settings.competitorChannels.push(v);
+    $('channel-input').value = '';
+    saveData();
+    renderSettingsLists();
+  });
+
   function renderSettings() {
     var s = data.settings;
     setNum('s-target-income', s.targetIncome);
@@ -681,6 +1047,7 @@
     setNum('s-max-clients-min', s.maxClientsMin);
     setNum('s-max-clients-max', s.maxClientsMax);
     $('s-start-date').value = s.startDate;
+    renderSettingsLists();
   }
 
   function saveSettings() {
@@ -728,6 +1095,8 @@
         data.weeks = parsed.weeks || {};
         data.months = parsed.months || {};
         data.streams = parsed.streams || [];
+        data.contacts = parsed.contacts || [];
+        data.funnelCache = Object.assign(defaultData().funnelCache, parsed.funnelCache || {});
         saveData();
         alert('Данные импортированы.');
         navigate('dashboard');
@@ -741,7 +1110,7 @@
 
   on($('s-reset'), 'click', function () {
     if (!confirm('Это удалит ВСЕ данные приложения без возможности восстановления. Точно продолжить?')) return;
-    if (!confirm('Последнее предупреждение: все дни, недели, месяцы и эфиры будут стёрты. Продолжить?')) return;
+    if (!confirm('Последнее предупреждение: все дни, недели, месяцы, эфиры и контакты будут стёрты. Продолжить?')) return;
     localStorage.removeItem(STORAGE_KEY);
     data = defaultData();
     navigate('dashboard');
@@ -749,6 +1118,7 @@
 
   // ================= INIT =================
   navigate('dashboard');
+  fetchFunnel();
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', function () {

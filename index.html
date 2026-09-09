@@ -68,6 +68,14 @@
         <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
         <span>Месяц</span>
       </button>
+      <button class="widget-btn" data-nav="funnel">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M4 4h16l-6.5 8.5V19l-3 2v-8.5L4 4z"/></svg>
+        <span>Воронка</span>
+      </button>
+      <button class="widget-btn" data-nav="crm-list">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span>CRM</span>
+      </button>
       <button class="widget-btn" data-nav="stream">
         <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3"/></svg>
         <span>Эфир</span>
@@ -95,13 +103,15 @@
       <label class="row-field">Тредов в Threads
         <input type="number" inputmode="numeric" min="0" id="f-threads" value="0">
       </label>
+      <label class="row-field">Контент-опора (необязательно)
+        <select id="f-pillar"><option value="">— не выбрано —</option></select>
+      </label>
     </div>
 
     <div class="card">
       <div class="card-title">Комментинг</div>
-      <label class="row-field">Каналов конкурентов прокомментировал
-        <input type="number" inputmode="numeric" min="0" id="f-comment-channels" value="0">
-      </label>
+      <div class="muted small" style="margin-bottom:8px;">Каналы, которые прокомментировал сегодня</div>
+      <div id="f-comment-channels-list"></div>
       <label class="row-field">Комментариев оставил всего
         <input type="number" inputmode="numeric" min="0" id="f-comments-total" value="0">
       </label>
@@ -116,9 +126,7 @@
 
     <div class="card">
       <div class="card-title">Воронка за день</div>
-      <label class="row-field">Заявок пришло
-        <input type="number" inputmode="numeric" min="0" id="f-leads" value="0">
-      </label>
+      <div class="muted small" style="margin-bottom:8px;">Заявки считаются автоматически — экран «Воронка». Здесь — то, что происходит после заявки.</div>
       <label class="row-field">Разборов / созвонов
         <input type="number" inputmode="numeric" min="0" id="f-calls" value="0">
       </label>
@@ -139,6 +147,13 @@
     <div class="card">
       <div class="card-title">Прошлые записи дневника</div>
       <div id="diary-history"></div>
+    </div>
+
+    <div class="card" id="stage-task-card" hidden>
+      <div class="card-title">Задание этапа 1</div>
+      <div class="small muted" id="stage-task-text"></div>
+      <textarea id="stage-task-field" rows="3" hidden></textarea>
+      <button class="btn btn-secondary" id="stage-task-link" hidden style="margin-top:10px;"></button>
     </div>
 
     <div class="save-bar">
@@ -197,23 +212,6 @@
     </div>
 
     <div class="card">
-      <div class="card-title">Платная реклама</div>
-      <div class="ad-form">
-        <input type="number" inputmode="decimal" min="0" id="ad-amount" placeholder="Сумма расхода, ₽">
-        <input type="date" id="ad-date">
-        <input type="text" id="ad-label" placeholder="Эфир / кампания (необязательно)">
-        <button class="btn btn-secondary" id="ad-add">Добавить</button>
-      </div>
-      <div id="ad-list" class="ad-list"></div>
-      <div class="muted small" id="ad-total">Сумма за месяц: 0 ₽</div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">Расчёты за месяц</div>
-      <div class="stat-grid" id="month-stats"></div>
-    </div>
-
-    <div class="card">
       <div class="card-title">Прогресс к цели</div>
       <div class="stat-grid" id="month-progress"></div>
     </div>
@@ -227,6 +225,69 @@
       <button class="btn btn-primary" id="month-save">Сохранить месяц</button>
       <div class="save-status" id="month-save-status"></div>
     </div>
+  </section>
+
+  <!-- ВОРОНКА -->
+  <section class="view" id="view-funnel" data-view="funnel">
+    <div class="card">
+      <div class="card-title">Автоматическая часть (из бота)</div>
+      <div class="stat-grid" id="funnel-auto-stats"></div>
+      <div class="muted small" id="funnel-updated" style="margin-top:10px;">—</div>
+      <button class="btn btn-secondary" id="funnel-refresh" style="margin-top:10px; width:100%;">Обновить</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Партнёры</div>
+      <div id="funnel-partners"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Весь путь: от бота до флагмана</div>
+      <div class="funnel" id="funnel-chain"></div>
+    </div>
+  </section>
+
+  <!-- CRM: список -->
+  <section class="view" id="view-crm-list" data-view="crm-list">
+    <div class="save-bar" style="position:static; margin-bottom:12px;">
+      <button class="btn btn-primary" id="crm-new">+ Новый контакт</button>
+    </div>
+    <div id="crm-list"></div>
+  </section>
+
+  <!-- CRM: детали контакта -->
+  <section class="view" id="view-crm-detail" data-view="crm-detail">
+    <div class="date-nav">
+      <button class="icon-btn" id="crm-back">‹ Назад</button>
+    </div>
+
+    <div class="card">
+      <label class="row-field">Имя / ник
+        <input type="text" id="crm-name" placeholder="Как зовут">
+      </label>
+      <label class="row-field">Источник
+        <input type="text" id="crm-source" placeholder="Instagram, эфир, реферал...">
+      </label>
+      <label class="row-field">Дата последнего касания
+        <input type="date" id="crm-last-touch">
+      </label>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Этап</div>
+      <div class="stage-picker" id="crm-stage-picker"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Заметка</div>
+      <textarea id="crm-note" rows="5" placeholder="Заметки по контакту..."></textarea>
+    </div>
+
+    <div class="save-bar">
+      <button class="btn btn-primary" id="crm-save">Сохранить контакт</button>
+      <button class="btn btn-danger" id="crm-delete">Удалить</button>
+    </div>
+    <div class="save-status" id="crm-save-status"></div>
   </section>
 
   <!-- ЭФИР: список -->
@@ -250,6 +311,17 @@
       <label class="row-field">Дата эфира
         <input type="date" id="stream-date">
       </label>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Ориентировочный таймлайн</div>
+      <div class="timeline-hint">
+        <div class="timeline-row"><b>T-14…T-10</b><span>Оффер, структура, чат, партнёрка</span></div>
+        <div class="timeline-row"><b>T-9…T-3</b><span>Трафик, заведение людей в чат</span></div>
+        <div class="timeline-row"><b>T-2…T-1</b><span>Активный прогрев в чате</span></div>
+        <div class="timeline-row"><b>T-0</b><span>Эфир</span></div>
+        <div class="timeline-row"><b>T+1</b><span>Созвон-приглашения, выдача, разборы</span></div>
+      </div>
     </div>
 
     <div class="card">
@@ -337,8 +409,26 @@
     </div>
 
     <div class="card">
+      <div class="card-title">Контент-опоры</div>
+      <div class="tag-list" id="pillars-list"></div>
+      <div class="tag-add-row">
+        <input type="text" id="pillar-input" placeholder="Новая контент-опора">
+        <button class="btn btn-secondary" id="pillar-add">Добавить</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Каналы конкурентов</div>
+      <div class="tag-list" id="channels-list"></div>
+      <div class="tag-add-row">
+        <input type="text" id="channel-input" placeholder="Название или ссылка на канал">
+        <button class="btn btn-secondary" id="channel-add">Добавить</button>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-title">Данные</div>
-      <div class="muted small">Все данные хранятся только на этом устройстве, в браузере. Ничего не отправляется на сервер.</div>
+      <div class="muted small">Все данные хранятся только на этом устройстве, в браузере. Ничего не отправляется на сервер (кроме чтения статистики воронки на своём же прокси).</div>
       <div class="settings-data-actions">
         <button class="btn btn-secondary" id="s-export">Экспорт данных (JSON)</button>
         <button class="btn btn-secondary" id="s-import-btn">Импорт данных</button>
@@ -371,6 +461,14 @@
   <button class="tab" data-nav="month">
     <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
     <span class="tab-label">Месяц</span>
+  </button>
+  <button class="tab" data-nav="funnel">
+    <svg class="icon" viewBox="0 0 24 24"><path d="M4 4h16l-6.5 8.5V19l-3 2v-8.5L4 4z"/></svg>
+    <span class="tab-label">Воронка</span>
+  </button>
+  <button class="tab" data-nav="crm-list">
+    <svg class="icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+    <span class="tab-label">CRM</span>
   </button>
   <button class="tab" data-nav="stream-list">
     <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3"/></svg>

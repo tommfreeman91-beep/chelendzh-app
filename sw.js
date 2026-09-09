@@ -1,4 +1,4 @@
-var CACHE_NAME = 'chelendzh-cache-v2';
+var CACHE_NAME = 'chelendzh-cache-v3';
 var PRECACHE_URLS = [
   './',
   './index.html',

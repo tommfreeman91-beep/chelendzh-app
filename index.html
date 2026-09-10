@@ -32,9 +32,9 @@
   <!-- ДАШБОРД -->
   <section class="view" id="view-dashboard" data-view="dashboard">
     <div class="lock-hero">
-      <div class="lock-hero-caption">Прогресс к цели</div>
+      <div class="lock-hero-caption">Доход к цели месяца</div>
       <div class="lock-hero-number" id="dash-progress-big">0%</div>
-      <div class="lock-hero-sub"><span id="dash-sales-so-far">0</span> из <span id="dash-sales-needed">2</span> продаж флагмана</div>
+      <div class="lock-hero-sub"><span id="dash-income-so-far">0 ₽</span> из <span id="dash-income-target">0 ₽</span></div>
       <div class="progress-bar"><div class="progress-bar-fill" id="dash-progress-fill"></div></div>
       <div class="lock-hero-note" id="dash-progress-note">—</div>
     </div>
@@ -67,6 +67,10 @@
       <button class="widget-btn" data-nav="month">
         <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
         <span>Месяц</span>
+      </button>
+      <button class="widget-btn" data-nav="payments-list">
+        <svg class="icon" viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+        <span>Оплаты</span>
       </button>
       <button class="widget-btn" data-nav="funnel">
         <svg class="icon" viewBox="0 0 24 24"><path d="M4 4h16l-6.5 8.5V19l-3 2v-8.5L4 4z"/></svg>
@@ -225,6 +229,60 @@
       <button class="btn btn-primary" id="month-save">Сохранить месяц</button>
       <div class="save-status" id="month-save-status"></div>
     </div>
+  </section>
+
+  <!-- ОПЛАТЫ: список -->
+  <section class="view" id="view-payments-list" data-view="payments-list">
+    <div class="save-bar" style="position:static; margin-bottom:12px;">
+      <button class="btn btn-primary" id="payment-client-new">+ Новый клиент</button>
+    </div>
+    <div id="payments-client-list"></div>
+  </section>
+
+  <!-- ОПЛАТЫ: карточка клиента -->
+  <section class="view" id="view-payments-detail" data-view="payments-detail">
+    <div class="date-nav">
+      <button class="icon-btn" id="payment-back">‹ Назад</button>
+    </div>
+
+    <div class="card">
+      <label class="row-field">Имя клиента
+        <input type="text" id="pay-client-name" placeholder="Как зовут">
+      </label>
+      <label class="row-field">Формат продукта
+        <select id="pay-client-product">
+          <option value="intensive">Интенсив</option>
+          <option value="flagship">Флагман</option>
+          <option value="custom">Свой вариант</option>
+        </select>
+      </label>
+      <label class="row-field">Общая сумма к оплате, ₽
+        <input type="number" inputmode="numeric" min="0" id="pay-client-total">
+      </label>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Прогресс оплаты</div>
+      <div class="progress-numbers" id="pay-progress-numbers">0 / 0 ₽ — 0%</div>
+      <div class="progress-bar" style="margin-top:10px;"><div class="progress-bar-fill" id="pay-progress-fill"></div></div>
+      <div class="stage-badge" id="pay-status-badge" style="margin-top:12px;">В рассрочке</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Платежи</div>
+      <div id="pay-payments-list"></div>
+      <div class="ad-form" style="margin-top:10px;">
+        <input type="number" inputmode="decimal" min="0" id="pay-new-amount" placeholder="Сумма платежа, ₽">
+        <input type="date" id="pay-new-date">
+        <button class="btn btn-secondary" id="pay-add-payment">Добавить платёж</button>
+      </div>
+    </div>
+
+    <div class="save-bar">
+      <button class="btn btn-primary" id="payment-save">Сохранить клиента</button>
+      <button class="btn btn-danger" id="payment-delete">Удалить</button>
+    </div>
+    <div class="save-status" id="payment-save-status"></div>
   </section>
 
   <!-- ВОРОНКА -->
@@ -461,6 +519,10 @@
   <button class="tab" data-nav="month">
     <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
     <span class="tab-label">Месяц</span>
+  </button>
+  <button class="tab" data-nav="payments-list">
+    <svg class="icon" viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+    <span class="tab-label">Оплаты</span>
   </button>
   <button class="tab" data-nav="funnel">
     <svg class="icon" viewBox="0 0 24 24"><path d="M4 4h16l-6.5 8.5V19l-3 2v-8.5L4 4z"/></svg>

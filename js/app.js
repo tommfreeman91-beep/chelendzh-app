@@ -63,6 +63,7 @@
       months: {},
       streams: [],
       contacts: [],
+      payments: [],
       funnelCache: { data: null, lastSuccess: null, lastError: false, history: [] }
     };
   }
@@ -81,6 +82,7 @@
       d.months = parsed.months || {};
       d.streams = parsed.streams || [];
       d.contacts = parsed.contacts || [];
+      d.payments = parsed.payments || [];
       d.funnelCache = Object.assign(d.funnelCache, parsed.funnelCache || {});
       return d;
     } catch (e) {
@@ -142,7 +144,8 @@
     weekMonday: fmtDate(mondayOf(new Date())),
     monthDate: fmtDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)),
     streamId: null,
-    contactId: null
+    contactId: null,
+    paymentClientId: null
   };
 
   // ---------- generic dom helpers ----------
@@ -188,6 +191,7 @@
     state.view = view;
     if (params && params.streamId !== undefined) state.streamId = params.streamId;
     if (params && params.contactId !== undefined) state.contactId = params.contactId;
+    if (params && params.paymentClientId !== undefined) state.paymentClientId = params.paymentClientId;
 
     document.querySelectorAll('.view').forEach(function (el) {
       el.classList.toggle('active', el.dataset.view === view);
@@ -196,13 +200,15 @@
       var nav = el.dataset.nav;
       var isActive = nav === view ||
         (nav === 'stream-list' && view === 'stream-detail') ||
-        (nav === 'crm-list' && view === 'crm-detail');
+        (nav === 'crm-list' && view === 'crm-detail') ||
+        (nav === 'payments-list' && view === 'payments-detail');
       el.classList.toggle('active', isActive);
     });
 
     var titles = {
       dashboard: 'Челлендж', today: 'Сегодня', week: 'Неделя', month: 'Месяц',
       funnel: 'Воронка', 'crm-list': 'CRM', 'crm-detail': 'Контакт',
+      'payments-list': 'Оплаты', 'payments-detail': 'Клиент',
       'stream-list': 'Эфиры', 'stream-detail': 'Эфир', settings: 'Настройки'
     };
     $('topbar-title').textContent = titles[view] || 'Челлендж';
@@ -214,6 +220,8 @@
     if (view === 'funnel') { renderFunnelScreen(); if (FUNNEL_AUTO_ENABLED) fetchFunnel(); }
     if (view === 'crm-list') renderCrmList();
     if (view === 'crm-detail') renderCrmDetail();
+    if (view === 'payments-list') renderPaymentsList();
+    if (view === 'payments-detail') renderPaymentDetail();
     if (view === 'stream-list') renderStreamList();
     if (view === 'stream-detail') renderStreamDetail();
     if (view === 'settings') renderSettings();
@@ -231,32 +239,29 @@
   function renderDashboard() {
     var s = data.settings;
     var todayIdx = challengeMonthIndex(todayStr(), s.startDate);
-    var rawIdx = challengeMonthIndexRaw(todayStr(), s.startDate);
     var daysSinceStart = Math.floor((parseDate(todayStr()) - parseDate(s.startDate)) / 86400000) + 1;
 
     $('dash-month-num').textContent = todayIdx;
     $('dash-day-num').textContent = Math.max(daysSinceStart, 1);
     $('dash-start-date').textContent = fmtHuman(parseDate(s.startDate));
 
-    var salesSoFar = totalFlagshipSalesSince(s.startDate);
-    var required = Math.max(1, Math.ceil(s.targetIncome / s.flagshipPrice));
-    var remaining = Math.max(required - salesSoFar, 0);
-    var monthsRemaining = Math.max(6 - rawIdx + 1, rawIdx > 6 ? 0 : 1);
+    var todayMonthKey = monthKey(new Date());
+    var monthIncome = sumPaymentsForMonth(todayMonthKey);
+    var target = s.targetIncome || 0;
+    var fillPct = target > 0 ? Math.min(100, Math.round((monthIncome / target) * 100)) : 0;
 
-    $('dash-sales-so-far').textContent = salesSoFar;
-    $('dash-sales-needed').textContent = required;
-    var fillPct = Math.min(100, Math.round((salesSoFar / required) * 100));
+    $('dash-income-so-far').textContent = fmtMoney(monthIncome);
+    $('dash-income-target').textContent = fmtMoney(target);
     $('dash-progress-fill').style.width = fillPct + '%';
     $('dash-progress-big').textContent = fillPct + '%';
 
     var note;
-    if (rawIdx > 6) {
-      note = remaining === 0 ? 'Челлендж завершён, цель достигнута 🎉' : 'Челлендж завершён. Не хватило ' + remaining + ' продаж флагмана.';
-    } else if (remaining === 0) {
-      note = 'Цель по числу флагман-продаж уже выполнена!';
+    if (target <= 0) {
+      note = 'Задай целевой доход в Настройках';
+    } else if (monthIncome >= target) {
+      note = 'Цель месяца выполнена! Сверху: ' + fmtMoney(monthIncome - target);
     } else {
-      var avg = monthsRemaining > 0 ? (remaining / monthsRemaining) : remaining;
-      note = 'Нужно ещё ' + remaining + ' продаж флагмана · ~' + round1(avg) + ' в месяц (' + monthsRemaining + ' мес. осталось)';
+      note = 'До цели месяца не хватает ' + fmtMoney(target - monthIncome);
     }
     $('dash-progress-note').textContent = note;
 
@@ -277,10 +282,12 @@
     });
   }
 
-  function totalFlagshipSalesSince(startStr) {
+  function sumPaymentsForMonth(key) {
     var sum = 0;
-    Object.keys(data.days).forEach(function (k) {
-      if (k >= startStr) sum += (data.days[k].flagshipSales || 0);
+    data.payments.forEach(function (c) {
+      (c.payments || []).forEach(function (p) {
+        if (p.date && p.date.indexOf(key) === 0) sum += (p.amount || 0);
+      });
     });
     return sum;
   }
@@ -610,18 +617,18 @@
   function renderMonthProgress() {
     var s = data.settings;
     var rawIdx = challengeMonthIndexRaw(todayStr(), s.startDate);
-    var salesSoFar = totalFlagshipSalesSince(s.startDate);
-    var required = Math.max(1, Math.ceil(s.targetIncome / s.flagshipPrice));
-    var remaining = Math.max(required - salesSoFar, 0);
     var monthsRemaining = Math.max(6 - rawIdx + 1, rawIdx > 6 ? 0 : 1);
-    var avg = monthsRemaining > 0 ? remaining / monthsRemaining : remaining;
+    var key = monthKey(parseDate(state.monthDate));
+    var monthIncome = sumPaymentsForMonth(key);
+    var target = s.targetIncome || 0;
+    var pctVal = target > 0 ? Math.round((monthIncome / target) * 100) : null;
 
     var grid = $('month-progress');
     grid.innerHTML =
-      statItem('Продано флагманов всего', salesSoFar) +
-      statItem('Нужно всего (для цели)', required) +
-      statItem('Осталось месяцев', Math.max(monthsRemaining, 0)) +
-      statItem('Нужно продаж в среднем/мес', round1(avg));
+      statItem('Доход за месяц (факт)', fmtMoney(monthIncome)) +
+      statItem('Цель дохода в месяц', fmtMoney(target)) +
+      statItem('% от цели', pctVal === null ? '—' : pctVal + '%') +
+      statItem('Осталось месяцев (до 6-го)', Math.max(monthsRemaining, 0));
   }
 
   function saveMonthSummary() {
@@ -781,6 +788,200 @@
   on($('funnel-refresh'), 'click', function () {
     $('funnel-updated').textContent = 'Обновляю...';
     fetchFunnel();
+  });
+
+  // ================= ОПЛАТЫ =================
+  var PRODUCT_LABELS = { intensive: 'Интенсив', flagship: 'Флагман', custom: 'Свой вариант' };
+
+  function newPaymentClient() {
+    var c = {
+      id: 'pay_' + Date.now(),
+      name: '',
+      product: 'intensive',
+      totalAmount: data.settings.testPrice || 0,
+      payments: [],
+      createdAt: Date.now()
+    };
+    data.payments.push(c);
+    saveData();
+    return c;
+  }
+
+  function currentPaymentClient() {
+    return data.payments.find(function (c) { return c.id === state.paymentClientId; });
+  }
+
+  function paidSum(client) {
+    return (client.payments || []).reduce(function (s, p) { return s + (p.amount || 0); }, 0);
+  }
+
+  function renderPaymentsList() {
+    var wrap = $('payments-client-list');
+    var list = data.payments.slice();
+    list.sort(function (a, b) {
+      var aDone = a.totalAmount > 0 && paidSum(a) >= a.totalAmount;
+      var bDone = b.totalAmount > 0 && paidSum(b) >= b.totalAmount;
+      if (aDone !== bDone) return aDone ? 1 : -1;
+      return b.createdAt - a.createdAt;
+    });
+    if (!list.length) {
+      wrap.innerHTML = '<div class="stream-empty">Клиентов пока нет. Нажми «Новый клиент».</div>';
+      return;
+    }
+    wrap.innerHTML = '';
+    list.forEach(function (c) {
+      var paid = paidSum(c);
+      var total = c.totalAmount || 0;
+      var pctVal = total > 0 ? Math.min(100, Math.round((paid / total) * 100)) : 0;
+      var done = total > 0 && paid >= total;
+
+      var card = document.createElement('div');
+      card.className = 'stream-card';
+
+      var title = document.createElement('div');
+      title.className = 'stream-card-title';
+      title.textContent = c.name || 'Без имени';
+
+      var meta = document.createElement('div');
+      meta.className = 'stream-card-meta';
+      meta.textContent = PRODUCT_LABELS[c.product] || c.product;
+
+      var barWrap = document.createElement('div');
+      barWrap.className = 'progress-bar';
+      barWrap.style.margin = '10px 0 6px';
+      var barFill = document.createElement('div');
+      barFill.className = 'progress-bar-fill';
+      barFill.style.width = pctVal + '%';
+      barWrap.appendChild(barFill);
+
+      var numbers = document.createElement('div');
+      numbers.className = 'small muted';
+      numbers.textContent = fmtMoney(paid) + ' / ' + fmtMoney(total) + ' — ' + pctVal + '%';
+
+      var badge = document.createElement('div');
+      badge.className = 'stage-badge';
+      badge.textContent = done ? 'Оплачено полностью' : 'В рассрочке';
+
+      card.appendChild(title);
+      card.appendChild(meta);
+      card.appendChild(barWrap);
+      card.appendChild(numbers);
+      card.appendChild(badge);
+      card.addEventListener('click', function () { navigate('payments-detail', { paymentClientId: c.id }); });
+      wrap.appendChild(card);
+    });
+  }
+
+  on($('payment-client-new'), 'click', function () {
+    var c = newPaymentClient();
+    navigate('payments-detail', { paymentClientId: c.id });
+  });
+  on($('payment-back'), 'click', function () { navigate('payments-list'); });
+
+  function renderPaymentPaymentsList(c) {
+    var wrap = $('pay-payments-list');
+    if (!c.payments.length) {
+      wrap.innerHTML = '<div class="diary-empty">Платежей пока нет</div>';
+      return;
+    }
+    wrap.innerHTML = '';
+    c.payments.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).forEach(function (p) {
+      var row = document.createElement('div');
+      row.className = 'ad-item';
+      var span = document.createElement('span');
+      span.textContent = fmtMoney(p.amount) + ' · ' + fmtHuman(parseDate(p.date));
+      var del = document.createElement('button');
+      del.className = 'ad-item-del';
+      del.textContent = '✕';
+      del.addEventListener('click', function () {
+        c.payments = c.payments.filter(function (x) { return x.id !== p.id; });
+        saveData();
+        renderPaymentPaymentsList(c);
+        renderPaymentProgress(c);
+        renderDashboard();
+      });
+      row.appendChild(span);
+      row.appendChild(del);
+      wrap.appendChild(row);
+    });
+  }
+
+  function renderPaymentProgress(c) {
+    var paid = paidSum(c);
+    var total = c.totalAmount || 0;
+    var pctVal = total > 0 ? Math.min(100, Math.round((paid / total) * 100)) : 0;
+    $('pay-progress-numbers').textContent = fmtMoney(paid) + ' / ' + fmtMoney(total) + ' — ' + pctVal + '%';
+    $('pay-progress-fill').style.width = pctVal + '%';
+    var done = total > 0 && paid >= total;
+    $('pay-status-badge').textContent = done ? 'Оплачено полностью' : 'В рассрочке';
+  }
+
+  function renderPaymentDetail() {
+    var c = currentPaymentClient();
+    if (!c) { navigate('payments-list'); return; }
+    setText('pay-client-name', c.name);
+    $('pay-client-product').value = c.product;
+    setNum('pay-client-total', c.totalAmount);
+    $('pay-new-date').value = todayStr();
+    renderPaymentPaymentsList(c);
+    renderPaymentProgress(c);
+  }
+
+  function savePaymentClientField() {
+    var c = currentPaymentClient();
+    if (!c) return;
+    c.name = textVal('pay-client-name');
+    c.product = $('pay-client-product').value;
+    c.totalAmount = numVal('pay-client-total');
+    saveData();
+    renderPaymentProgress(c);
+  }
+
+  on($('pay-client-name'), 'change', savePaymentClientField);
+  on($('pay-client-total'), 'change', savePaymentClientField);
+  on($('pay-client-product'), 'change', function () {
+    var c = currentPaymentClient();
+    if (!c) return;
+    var product = $('pay-client-product').value;
+    c.product = product;
+    if (product === 'intensive') c.totalAmount = data.settings.testPrice || 0;
+    else if (product === 'flagship') c.totalAmount = data.settings.flagshipPrice || 0;
+    // 'custom': сумма остаётся такой, какая была введена вручную
+    setNum('pay-client-total', c.totalAmount);
+    saveData();
+    renderPaymentProgress(c);
+  });
+
+  on($('pay-add-payment'), 'click', function () {
+    var c = currentPaymentClient();
+    if (!c) return;
+    var amount = parseFloat($('pay-new-amount').value);
+    var dateStr = $('pay-new-date').value || todayStr();
+    if (!amount || amount <= 0) { alert('Укажи сумму платежа'); return; }
+    c.payments.push({
+      id: 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+      amount: amount,
+      date: dateStr
+    });
+    saveData();
+    $('pay-new-amount').value = '';
+    renderPaymentPaymentsList(c);
+    renderPaymentProgress(c);
+    renderDashboard();
+  });
+
+  on($('payment-save'), 'click', function () {
+    savePaymentClientField();
+    flashStatus('payment-save-status', 'Сохранено ✓');
+    renderPaymentsList();
+  });
+  on($('payment-delete'), 'click', function () {
+    var c = currentPaymentClient();
+    if (!c) return;
+    if (!confirm('Удалить клиента «' + (c.name || 'без имени') + '» вместе со всеми платежами?')) return;
+    data.payments = data.payments.filter(function (x) { return x.id !== c.id; });
+    saveData();
+    navigate('payments-list');
   });
 
   // ================= CRM =================
@@ -1115,6 +1316,7 @@
         data.months = parsed.months || {};
         data.streams = parsed.streams || [];
         data.contacts = parsed.contacts || [];
+        data.payments = parsed.payments || [];
         data.funnelCache = Object.assign(defaultData().funnelCache, parsed.funnelCache || {});
         saveData();
         alert('Данные импортированы.');
